@@ -1,0 +1,15 @@
+# Secrets
+.env
+*.pem
+keys.txt
+
+# Runtime state
+traded.json
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
