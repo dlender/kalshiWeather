@@ -13,3 +13,15 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+
+# Compiled binaries
+*.exe
+*.o
+*.out
+CPP/kalshiApiTest
+CPP/madisIngestor
+CPP/weatherTrader
+
+# Claude internal
+.claude/
+CPP/.claude/
