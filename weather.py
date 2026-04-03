@@ -88,7 +88,7 @@ async def stream_temp(
 
     while True:
         if session_id:
-            url = f"wss://{PUSH_HOST}/feed/{token}/{session_id}"
+            url = f"wss://{PUSH_HOST}/feed/{token}/{session_id}?units=temp%7Cf"
         else:
             url = (
                 f"wss://{PUSH_HOST}/feed/{token}/"

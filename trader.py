@@ -117,6 +117,7 @@ class TraderState:
         self._event_cache_ts: dict[tuple[str, str], float] = {}
         self._event_cache_day: dict[tuple[str, str], date] = {}
         self._last_bounds:  dict[str, tuple] = {}   # stid -> (f_floor, f_ceil)
+        self._last_raw_f:   dict[str, float] = {}   # stid -> last raw_f for sanity check
         if self.traded:
             log.info("Loaded %d already-traded tickers: %s", len(self.traded), sorted(self.traded))
 
@@ -234,6 +235,17 @@ class TraderState:
         if stid not in STATION_MARKETS:
             return
 
+        # Sanity check: reject readings that jump more than 25°F from the previous obs.
+        # This catches unit bugs (e.g. Celsius delivered as Fahrenheit after reconnect).
+        prev = self._last_raw_f.get(stid)
+        if prev is not None and abs(raw_f - prev) > 25:
+            log.warning(
+                "%s  SKIPPED suspicious temp jump %.1fF -> %.1fF  obs=%s",
+                stid, prev, raw_f, obs_time,
+            )
+            return
+        self._last_raw_f[stid] = raw_f
+
         log.info("%s  %.1fF  floor=%dF  ceil=%dF  obs=%s", stid, raw_f, f_floor, f_ceil, obs_time)
 
         # Skip if bounds haven't changed for this station
@@ -276,10 +288,11 @@ class TraderState:
             try:
                 order = await self.client.place_no_order(ticker, ORDER_SIZE, no_price)
                 log.info("     order_id=%s  status=%s", order.get('order_id'), order.get('status'))
-                self.traded.add(ticker)
-                _save_traded(self.traded)
             except Exception as e:
                 log.error("     order failed: %s", e)
+            finally:
+                self.traded.add(ticker)
+                _save_traded(self.traded)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
