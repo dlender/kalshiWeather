@@ -58,6 +58,8 @@ MIN_YES_PRICE    = 5     # skip if YES already below this (cents)
 MAX_NO_PRICE     = 99    # never pay more than this for a NO contract (cents)
 MARKET_CACHE_TTL = 300   # seconds before re-fetching market list
 EVENT_CACHE_TTL  = 60    # seconds before re-resolving which dated event is active
+NEXT_DAY_PREWARM_HOUR = 23
+NEXT_DAY_PREWARM_MINUTE = 50
 
 HERE             = Path(__file__).parent
 TRADED_FILE      = HERE / "traded.json"
@@ -113,6 +115,7 @@ class TraderState:
         self._cache_ts:     dict[str, float] = {}
         self._event_cache:  dict[tuple[str, str], str] = {}
         self._event_cache_ts: dict[tuple[str, str], float] = {}
+        self._event_cache_day: dict[tuple[str, str], date] = {}
         self._last_bounds:  dict[str, tuple] = {}   # stid -> (f_floor, f_ceil)
         if self.traded:
             log.info("Loaded %d already-traded tickers: %s", len(self.traded), sorted(self.traded))
@@ -138,46 +141,81 @@ class TraderState:
             self._cache_ts[event_ticker]     = now
         return self._market_cache[event_ticker]
 
+    async def _candidate_for_day(self, series: str, target_day: date) -> tuple[date, datetime | None, str] | None:
+        event_ticker = f"{series}-{self._suffix_for_day(target_day)}"
+        markets = await self._get_markets(event_ticker)
+        open_markets = [m for m in markets if m.get("status") in ("open", "active")]
+        if not open_markets:
+            return None
+
+        close_times = [
+            close_at
+            for close_at in (self._parse_close_time(m.get("close_time")) for m in open_markets)
+            if close_at is not None
+        ]
+        close_at = min(close_times) if close_times else None
+
+        return (target_day, close_at, event_ticker)
+
+    async def _maybe_prewarm_next_day(self, series: str, city_now: datetime) -> None:
+        if (city_now.hour, city_now.minute) < (NEXT_DAY_PREWARM_HOUR, NEXT_DAY_PREWARM_MINUTE):
+            return
+
+        tomorrow = city_now.date() + timedelta(days=1)
+        event_ticker = f"{series}-{self._suffix_for_day(tomorrow)}"
+        try:
+            await self._get_markets(event_ticker)
+        except Exception as e:
+            log.warning("Prewarm %s failed: %s", event_ticker, e)
+
     async def _resolve_event(self, series: str, city_tz: ZoneInfo) -> str:
         now_mono = time.monotonic()
         cache_key = (series, city_tz.key)
+        city_now = datetime.now(timezone.utc).astimezone(city_tz)
+        local_today = city_now.date()
+
         cached_event = self._event_cache.get(cache_key)
-        if cached_event and now_mono - self._event_cache_ts.get(cache_key, 0) <= EVENT_CACHE_TTL:
+        cached_day = self._event_cache_day.get(cache_key)
+        if (
+            cached_event
+            and cached_day == local_today
+            and now_mono - self._event_cache_ts.get(cache_key, 0) <= EVENT_CACHE_TTL
+        ):
             return cached_event
 
-        now_utc = datetime.now(timezone.utc)
-        local_today = now_utc.astimezone(city_tz).date()
+        await self._maybe_prewarm_next_day(series, city_now)
+
+        today_candidate = await self._candidate_for_day(series, local_today)
+        if today_candidate is not None:
+            chosen_day, chosen_close, chosen_event = today_candidate
+            self._event_cache[cache_key] = chosen_event
+            self._event_cache_ts[cache_key] = now_mono
+            self._event_cache_day[cache_key] = local_today
+            close_msg = chosen_close.isoformat() if chosen_close else "unknown"
+            log.info(
+                "Resolved %s in %s -> %s (local_date=%s close=%s)",
+                series, city_tz.key, chosen_event, chosen_day, close_msg,
+            )
+            return chosen_event
 
         candidates = []
-        for offset in (-1, 0, 1):
+        for offset in (1, -1):
             target_day = local_today + timedelta(days=offset)
-            event_ticker = f"{series}-{self._suffix_for_day(target_day)}"
-            markets = await self._get_markets(event_ticker)
-            open_markets = [m for m in markets if m.get("status") in ("open", "active")]
-            if not open_markets:
-                continue
-
-            close_times = [
-                close_at
-                for close_at in (self._parse_close_time(m.get("close_time")) for m in open_markets)
-                if close_at is not None
-            ]
-            close_at = min(close_times) if close_times else None
-            candidates.append((target_day, close_at, event_ticker))
+            candidate = await self._candidate_for_day(series, target_day)
+            if candidate is not None:
+                candidates.append(candidate)
 
         if candidates:
-            future_candidates = [c for c in candidates if c[1] is None or c[1] > now_utc]
-            active_pool = future_candidates or candidates
             chosen_day, chosen_close, chosen_event = min(
-                active_pool,
+                candidates,
                 key=lambda item: (
-                    item[1] is None,
-                    item[1] if item[1] is not None else datetime.max.replace(tzinfo=timezone.utc),
                     abs((item[0] - local_today).days),
+                    item[0],
                 ),
             )
             self._event_cache[cache_key] = chosen_event
             self._event_cache_ts[cache_key] = now_mono
+            self._event_cache_day[cache_key] = local_today
             close_msg = chosen_close.isoformat() if chosen_close else "unknown"
             log.info(
                 "Resolved %s in %s -> %s (local_date=%s close=%s)",
@@ -188,6 +226,7 @@ class TraderState:
         fallback = f"{series}-{self._suffix_for_day(local_today)}"
         self._event_cache[cache_key] = fallback
         self._event_cache_ts[cache_key] = now_mono
+        self._event_cache_day[cache_key] = local_today
         log.warning("Falling back to local-date event for %s in %s -> %s", series, city_tz.key, fallback)
         return fallback
 

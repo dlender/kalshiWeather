@@ -39,7 +39,69 @@ class ResolveEventTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.load_traded_patcher.stop()
 
-    async def test_keeps_today_market_before_city_close(self):
+    async def test_prewarms_tomorrow_after_1150pm_local(self):
+        client = FakeKalshiClient(
+            {
+                "KXLOWTLAX-26APR02": [
+                    {
+                        "ticker": "KXLOWTLAX-26APR02-B60.5",
+                        "status": "open",
+                        "close_time": "2026-04-03T07:59:00Z",
+                    }
+                ],
+                "KXLOWTLAX-26APR03": [
+                    {
+                        "ticker": "KXLOWTLAX-26APR03-B60.5",
+                        "status": "open",
+                        "close_time": "2026-04-04T07:59:00Z",
+                    }
+                ],
+            }
+        )
+        state = trader.TraderState(client)
+        FixedDateTime.current = datetime(2026, 4, 2, 23, 55, tzinfo=ZoneInfo("America/Los_Angeles")).astimezone(timezone.utc)
+
+        with patch("trader.datetime", FixedDateTime):
+            event = await state._resolve_event("KXLOWTLAX", ZoneInfo("America/Los_Angeles"))
+
+        self.assertEqual(event, "KXLOWTLAX-26APR02")
+        self.assertEqual(client.calls, ["KXLOWTLAX-26APR03", "KXLOWTLAX-26APR02"])
+
+    async def test_switches_immediately_after_midnight_even_with_fresh_cache(self):
+        client = FakeKalshiClient(
+            {
+                "KXLOWTLAX-26APR02": [
+                    {
+                        "ticker": "KXLOWTLAX-26APR02-B60.5",
+                        "status": "open",
+                        "close_time": "2026-04-03T07:59:00Z",
+                    }
+                ],
+                "KXLOWTLAX-26APR03": [
+                    {
+                        "ticker": "KXLOWTLAX-26APR03-B60.5",
+                        "status": "open",
+                        "close_time": "2026-04-04T07:59:00Z",
+                    }
+                ],
+            }
+        )
+        state = trader.TraderState(client)
+
+        monotonic_values = iter([1000.0, 1000.0, 1000.0, 1001.0, 1001.0, 1001.0])
+        with patch("trader.time.monotonic", side_effect=lambda: next(monotonic_values, 1001.0)):
+            FixedDateTime.current = datetime(2026, 4, 2, 23, 59, tzinfo=ZoneInfo("America/Los_Angeles")).astimezone(timezone.utc)
+            with patch("trader.datetime", FixedDateTime):
+                first = await state._resolve_event("KXLOWTLAX", ZoneInfo("America/Los_Angeles"))
+
+            FixedDateTime.current = datetime(2026, 4, 3, 0, 1, tzinfo=ZoneInfo("America/Los_Angeles")).astimezone(timezone.utc)
+            with patch("trader.datetime", FixedDateTime):
+                second = await state._resolve_event("KXLOWTLAX", ZoneInfo("America/Los_Angeles"))
+
+        self.assertEqual(first, "KXLOWTLAX-26APR02")
+        self.assertEqual(second, "KXLOWTLAX-26APR03")
+
+    async def test_keeps_today_market_before_city_midnight(self):
         client = FakeKalshiClient(
             {
                 "KXLOWTLAX-26APR02": [
@@ -65,8 +127,9 @@ class ResolveEventTests(unittest.IsolatedAsyncioTestCase):
             event = await state._resolve_event("KXLOWTLAX", ZoneInfo("America/Los_Angeles"))
 
         self.assertEqual(event, "KXLOWTLAX-26APR02")
+        self.assertEqual(client.calls, ["KXLOWTLAX-26APR02"])
 
-    async def test_switches_to_next_day_market_after_city_close(self):
+    async def test_switches_to_next_day_market_at_city_midnight(self):
         client = FakeKalshiClient(
             {
                 "KXLOWTLAX-26APR02": [
@@ -86,14 +149,15 @@ class ResolveEventTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         state = trader.TraderState(client)
-        FixedDateTime.current = datetime(2026, 4, 3, 8, 1, tzinfo=timezone.utc)
+        FixedDateTime.current = datetime(2026, 4, 3, 7, 1, tzinfo=timezone.utc)
 
         with patch("trader.datetime", FixedDateTime):
             event = await state._resolve_event("KXLOWTLAX", ZoneInfo("America/Los_Angeles"))
 
         self.assertEqual(event, "KXLOWTLAX-26APR03")
+        self.assertEqual(client.calls, ["KXLOWTLAX-26APR03"])
 
-    async def test_on_temp_trades_using_next_day_buckets_after_close(self):
+    async def test_on_temp_trades_using_next_day_buckets_after_midnight(self):
         next_day_markets = [
             {
                 "ticker": "KXLOWTLAX-26APR03-B60.5",
@@ -118,7 +182,7 @@ class ResolveEventTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         state = trader.TraderState(client)
-        FixedDateTime.current = datetime(2026, 4, 3, 8, 1, tzinfo=timezone.utc)
+        FixedDateTime.current = datetime(2026, 4, 3, 7, 1, tzinfo=timezone.utc)
         seen = {}
 
         def fake_no_targets(f_floor, f_ceil, markets, side, min_yes, traded_set):
@@ -137,7 +201,7 @@ class ResolveEventTests(unittest.IsolatedAsyncioTestCase):
             ]
 
         with patch("trader.datetime", FixedDateTime), patch("trader.no_targets", side_effect=fake_no_targets):
-            await state.on_temp("KLAX1M", 58.0, 57, 59, "2026-04-03T08:01:00Z")
+            await state.on_temp("KLAX1M", 58.0, 57, 59, "2026-04-03T07:01:00Z")
 
         self.assertEqual(seen["side"], "low")
         self.assertEqual(seen["markets"], next_day_markets)
