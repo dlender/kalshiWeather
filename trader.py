@@ -275,7 +275,7 @@ class TraderState:
 
         for side_label, mkt in all_targets:
             ticker   = mkt["ticker"]
-            no_price = min(mkt["no_price"], MAX_NO_PRICE)
+            no_price = MAX_NO_PRICE
             yes_ask  = mkt["yes_price"]
             log.info(
                 "  -> BUY NO [%s] %s  [%s,%s)F  YES=%dc  NO=%dc  x%d  "
