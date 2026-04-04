@@ -48,7 +48,6 @@ STATION_MARKETS = {
     "KLAS1M": {"tz": "America/Los_Angeles",  "low": None,         "high": "KXHIGHTLV"},
     "KMSP1M": {"tz": "America/Chicago",      "low": None,         "high": "KXHIGHTMIN"},
     "KSFO1M": {"tz": "America/Los_Angeles",  "low": None,         "high": "KXHIGHTSFO"},
-    "KJFK1M": {"tz": "America/New_York",     "low": "KXLOWTNYC",  "high": None},
     "KDFW1M": {"tz": "America/Chicago",      "low": None,         "high": "KXHIGHTDAL"},
     "KHOU1M": {"tz": "America/Chicago",      "low": None,         "high": "KXHIGHTHOU"},
 }
